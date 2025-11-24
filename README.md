@@ -1,2 +1,2 @@
-# deepcarom
-Control-Affine Reduced Order Models using Autoencoders. A PyTorch-based framework for building data-driven reduced order models with control-affine latent structure using deep autoencoders.
+# deepe2erom
+A PyTorch-based framework for building fully end-to-end, data-driven reduced order models using autoencoders with learnable latent dynamics. The framework supports general nonlinear ROMs, and includes an implementation of control-affine latent dynamics as a specific option.

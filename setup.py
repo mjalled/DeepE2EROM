@@ -8,10 +8,10 @@ setup(
     version="0.1.0",
     author="Ali Mjalled",
     author_email="ali.mjalled@ruhr-uni-bochum.de",
-    description="Control-Affine Reduced Order Models using Autoencoders",
+    description="End-to-End Reduced Order Models using Autoencoders",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/mjalled/deepcarom",
+    url="https://github.com/mjalled/deepe2erom",
     packages=find_packages(where="src"),
     package_dir={"": "src"},
     classifiers=[

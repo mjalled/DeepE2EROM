@@ -1,7 +1,9 @@
+import torch
 import torch.nn as nn
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Union, Tuple
 from .config import ModelConfig
 from .core import DeepE2EROM
+from .dynamics import ControlAffineDynamics, LSTMcDynamics, LinearDynamics  # Updated import
 
 def build_sequential(arch: List[Dict], component_name: str) -> nn.Sequential:
     """Build sequential network from architecture specification."""
@@ -44,55 +46,88 @@ def create_model_from_config(config: ModelConfig) -> DeepE2EROM:
     """Create model from configuration."""
     return DeepE2EROM(config)
 
+def _create_dynamics(dynamics_type: str, config: ModelConfig, **kwargs) -> nn.Module:
+    """Factory function to create dynamics based on type."""
+    if dynamics_type == "control_affine":
+        drift_arch = kwargs.get("drift_arch")
+        input_arch = kwargs.get("input_arch")
+        if drift_arch is None or input_arch is None:
+            raise ValueError("drift_arch and input_arch must be provided for control_affine dynamics")
+        return ControlAffineDynamics(config, drift_arch, input_arch)
+    elif dynamics_type == "lstm":
+        lstm_hidden_size = kwargs.get("lstm_hidden_size", 128)
+        lstm_layers = kwargs.get("lstm_layers", 1)
+        return LSTMcDynamics(config, lstm_hidden_size, lstm_layers)
+    elif dynamics_type == "linear":
+        return LinearDynamics(config)
+    else:
+        raise ValueError(f"Unknown dynamics_type: {dynamics_type}. Supported: 'control_affine', 'lstm', 'linear'")
+
 def create_model(
-    state_dim: int,
+    state_dim: Union[int, Tuple[int, ...]],
     control_dim: int, 
     lookback: int,
     pred_horizon: int,
     latent_dim: int,
-    dynamics: nn.Module,
+    # Dynamics options: either specify type + archs, or pass pre-built module
+    dynamics_type: Optional[str] = None,  # e.g., "control_affine", "lstm", "linear"
+    dynamics: Optional[nn.Module] = None,  # Pre-built dynamics (for custom/advanced use)
+    drift_arch: Optional[List[Dict]] = None,  # For control_affine
+    input_arch: Optional[List[Dict]] = None,  # For control_affine
+    lstm_hidden_size: Optional[int] = 128,  # For lstm
+    lstm_layers: Optional[int] = 1,  # For lstm
     # Core components
     encoder_arch: Optional[List[Dict]] = None,
     decoder_arch: Optional[List[Dict]] = None,
     encoder: Optional[nn.Module] = None,
     decoder: Optional[nn.Module] = None,
-    # Input autoencoder
-    use_input_autoencoder: bool = False,
-    input_latent_dim: Optional[int] = None,
-    input_encoder_arch: Optional[List[Dict]] = None,
-    input_decoder_arch: Optional[List[Dict]] = None,
-    input_encoder: Optional[nn.Module] = None,
-    input_decoder: Optional[nn.Module] = None,
-    # Training weights
-    rec_weight: float = 1.0,
-    pred_weight: float = 1.0,
-    latent_weight: float = 1.0,
-    input_rec_weight: float = 1.0
+    # Control autoencoder
+    use_control_autoencoder: bool = False,
+    control_latent_dim: Optional[int] = None,
+    control_encoder_arch: Optional[List[Dict]] = None,
+    control_decoder_arch: Optional[List[Dict]] = None,
+    control_encoder: Optional[nn.Module] = None,
+    control_decoder: Optional[nn.Module] = None,
+    # device
+    device: Optional[torch.device] = None
 ) -> DeepE2EROM:
     """Convenience function to create model with flexible dynamics options."""
     
+    # Validate dynamics specification
+    if dynamics_type is not None and dynamics is not None:
+        raise ValueError("Provide either dynamics_type OR dynamics, not both")
+    if dynamics_type is None and dynamics is None:
+        raise ValueError("Either dynamics_type or dynamics must be provided")
+    
+    # Build config without dynamics first
     config = ModelConfig(
         state_dim=state_dim,
         control_dim=control_dim,
         lookback=lookback,
         pred_horizon=pred_horizon,
         latent_dim=latent_dim,
-        input_latent_dim=input_latent_dim,
+        control_latent_dim=control_latent_dim,
         encoder_arch=encoder_arch,
         decoder_arch=decoder_arch,
-        dynamics=dynamics,
-        input_encoder_arch=input_encoder_arch,
-        input_decoder_arch=input_decoder_arch,
+        dynamics=None,  # Set later
+        control_encoder_arch=control_encoder_arch,
+        control_decoder_arch=control_decoder_arch,
         encoder=encoder,
         decoder=decoder,
-        input_encoder=input_encoder,
-        input_decoder=input_decoder,
-        rec_weight=rec_weight,
-        pred_weight=pred_weight,
-        latent_weight=latent_weight,
-        input_rec_weight=input_rec_weight,
-        use_input_autoencoder=use_input_autoencoder
+        control_encoder=control_encoder,
+        control_decoder=control_decoder,
+        use_control_autoencoder=use_control_autoencoder,
+        device=device
     )
+    
+    # Create dynamics based on type or use provided
+    if dynamics_type is not None:
+        dynamics = _create_dynamics(dynamics_type, config, 
+                                    drift_arch=drift_arch, input_arch=input_arch,
+                                    lstm_hidden_size=lstm_hidden_size, lstm_layers=lstm_layers)
+    
+    # Set dynamics in config
+    config.dynamics = dynamics
     
     return create_model_from_config(config)
 

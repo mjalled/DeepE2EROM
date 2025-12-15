@@ -4,7 +4,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
-    name="deepcarom",
+    name="deepe2erom",
     version="0.1.0",
     author="Ali Mjalled",
     author_email="ali.mjalled@ruhr-uni-bochum.de",

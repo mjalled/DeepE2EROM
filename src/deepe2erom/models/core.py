@@ -17,6 +17,10 @@ class DeepE2EROM(nn.Module):
         super().__init__()
         self.config = config
 
+        # Validate that dynamics is provided (moved from ModelConfig)
+        if self.config.dynamics is None:
+            raise ValueError("dynamics module must be provided")
+
         # Build or assign components
         self.encoder = config.encoder or self._build_component(config.encoder_arch, "encoder")
         self.decoder = config.decoder or self._build_component(config.decoder_arch, "decoder")
@@ -24,12 +28,15 @@ class DeepE2EROM(nn.Module):
         # Build dynamics based on configuration
         self.dynamics = config.dynamics
         
-        if config.use_input_autoencoder:
-            self.input_encoder = config.input_encoder or self._build_component(config.input_encoder_arch, "input_encoder")
-            self.input_decoder = config.input_decoder or self._build_component(config.input_decoder_arch, "input_decoder")
+        if config.use_control_autoencoder:
+            self.control_encoder = config.control_encoder or self._build_component(config.control_encoder_arch, "control_encoder")
+            self.control_decoder = config.control_decoder or self._build_component(config.control_decoder_arch, "control_encoder")
         else:
-            self.input_encoder = None
-            self.input_decoder = None
+            self.control_encoder = None
+            self.control_decoder = None
+            
+        # Move model to device
+        self.to(config.device)
             
         # Loss function
         self.mse_loss = nn.MSELoss()
@@ -55,6 +62,23 @@ class DeepE2EROM(nn.Module):
         # Reshape back to sequence
         return reconstructed.reshape(batch_size, lookback, *state_dims)
     
+    def forward_control_autoencoder(self, u: torch.Tensor) -> torch.Tensor:
+        """Control input autoencoder forward pass only."""
+        if self.control_encoder is None or self.control_decoder is None:
+            raise ValueError("Control autoencoder components are not defined.")
+        
+        batch_size, seq_length, control_dim = u.shape
+        
+        # Flatten batch and sequence dimensions
+        u_flat = u.reshape(-1, control_dim)
+        
+        # Encode and decode
+        latent = self.control_encoder(u_flat)
+        reconstructed = self.control_decoder(latent)
+        
+        # Reshape back to sequence
+        return reconstructed.reshape(batch_size, seq_length, control_dim)
+    
     def forward(self, x: torch.Tensor, u: torch.Tensor) -> Tuple:
         """
         Full forward pass with dynamics prediction.
@@ -70,7 +94,7 @@ class DeepE2EROM(nn.Module):
         u_seq_length = u.shape[1]
         
         assert lookback == self.config.lookback
-        assert u_seq_length == lookback + self.config.pred_horizon - 1
+        assert u_seq_length >= lookback + self.config.pred_horizon - 1, "Control sequence length is short and cannot predict future states for prediction horizon."
         assert self.dynamics is not None, "Dynamics module must be provided."
         
         # Autoencode input sequence
@@ -82,18 +106,18 @@ class DeepE2EROM(nn.Module):
         latents = latents_flat.reshape(batch_size, lookback, -1)
         
         # Process controls
-        if self.input_encoder is not None:
-            assert self.input_decoder is not None, "Input decoder must be provided when using input autoencoder."
-            # Encode and decode inputs
+        if self.control_encoder is not None:
+            assert self.control_decoder is not None, "Control decoder must be provided when using control autoencoder."
+
+            # Autoencode control inputs
+            decoded_input_sequence = self.forward_control_autoencoder(u)
+
+            # Encode inputs
             u_flat = u.reshape(-1, self.config.control_dim)
-            input_latents_flat = self.input_encoder(u_flat)
-            decoded_input_flat = self.input_decoder(input_latents_flat)
-            
+            input_latents_flat = self.control_encoder(u_flat)
             input_latents = input_latents_flat.reshape(batch_size, u_seq_length, -1)
-            decoded_input_sequence = decoded_input_flat.reshape(batch_size, u_seq_length, self.config.control_dim)
             control_data = input_latents
         else:
-            input_latents = u
             decoded_input_sequence = None
             control_data = u
         
@@ -124,67 +148,13 @@ class DeepE2EROM(nn.Module):
         pred_states = torch.cat(pred_states, dim=1)    # (batch, pred_horizon, *state_dims)
         
         # Return appropriate outputs based on configuration
-        if self.input_encoder is not None:
+        if self.control_encoder is not None:
             return decoded_sequence, decoded_input_sequence, pred_latents, pred_states
         else:
             return decoded_sequence, pred_latents, pred_states
     
-    def loss_function(self, *outputs, targets: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """
-        Compute loss function based on model outputs and targets.
-        
-        Args:
-            outputs: Outputs from forward pass
-            targets: Dictionary containing:
-                - 'input_states': Original input states
-                - 'target_states': Future states to predict
-                - ['input_controls']: Original input controls (if using input autoencoder)
-                
-        Returns:
-            total_loss: Combined weighted loss
-            loss_dict: Individual loss components
-        """
-        loss_dict = {}
-        
-        if self.input_encoder is not None:
-            decoded_sequence, decoded_input_sequence, pred_latents, pred_states = outputs
-            input_controls = targets['input_controls']
-            
-            # Input reconstruction loss
-            input_rec_loss = self.mse_loss(decoded_input_sequence, input_controls)
-            loss_dict['input_rec_loss'] = input_rec_loss.item()
-        else:
-            decoded_sequence, pred_latents, pred_states = outputs
-            input_rec_loss = torch.tensor(0.0, device=pred_states.device)
-        
-        # State reconstruction loss
-        input_states = targets['input_states']
-        rec_loss = self.mse_loss(decoded_sequence, input_states)
-        loss_dict['rec_loss'] = rec_loss.item()
-        
-        # Prediction loss
-        target_states = targets['target_states'] 
-        pred_loss = self.mse_loss(pred_states, target_states)
-        loss_dict['pred_loss'] = pred_loss.item()
-        
-        # Latent loss (consistency)
-        target_states_flat = target_states.reshape(-1, *target_states.shape[2:])
-        true_latents_flat = self.encoder(target_states_flat)
-        true_latents = true_latents_flat.reshape_as(pred_latents)
-        latent_loss = self.mse_loss(pred_latents, true_latents)
-        loss_dict['latent_loss'] = latent_loss.item()
-        
-        # Total weighted loss
-        total_loss = (self.config.rec_weight * rec_loss +
-                        self.config.pred_weight * pred_loss +
-                        self.config.latent_weight * latent_loss)
-        
-        if self.input_encoder is not None:
-            total_loss += self.config.input_rec_weight * input_rec_loss
-        
-        return total_loss, loss_dict
     
-    def count_parameters(self, verbose: bool = False) -> Dict[str, int]:
+    def count_parameters(self, verbose: bool = True) -> Dict[str, int]:
         """
         Count parameters for each component of the model.
         
@@ -203,10 +173,10 @@ class DeepE2EROM(nn.Module):
             'dynamics': self.dynamics,
         }
         
-        if self.input_encoder is not None:
-            assert self.input_decoder is not None, "Input decoder must be provided when using input autoencoder."
-            components['input_encoder'] = self.input_encoder
-            components['input_decoder'] = self.input_decoder
+        if self.control_encoder is not None:
+            assert self.control_encoder is not None, "Input decoder must be provided when using input autoencoder."
+            components['control_encoder'] = self.control_encoder
+            components['control_decoder'] = self.control_decoder
         
         for name, module in components.items():
             total_params = sum(p.numel() for p in module.parameters())

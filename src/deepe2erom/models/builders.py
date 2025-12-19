@@ -89,10 +89,14 @@ def create_model(
     control_encoder: Optional[nn.Module] = None,
     control_decoder: Optional[nn.Module] = None,
     # device
-    device: Optional[torch.device] = None
+    device: Optional[torch.device] = None,
+    seed: Optional[int] = None
 ) -> DeepE2EROM:
     """Convenience function to create model with flexible dynamics options."""
     
+    if seed is not None:
+        torch.manual_seed(seed)
+
     # Validate dynamics specification
     if dynamics_type is not None and dynamics is not None:
         raise ValueError("Provide either dynamics_type OR dynamics, not both")

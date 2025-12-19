@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
-from typing import Tuple, Dict, List, Optional
+from typing import Tuple, Dict, List, Optional, Union
 from .config import ModelConfig
+import numpy as np
 
 class DeepE2EROM(nn.Module):
     """
@@ -153,6 +154,56 @@ class DeepE2EROM(nn.Module):
         else:
             return decoded_sequence, pred_latents, pred_states
     
+    def simulate(self, x0: Union[torch.Tensor, np.ndarray], u: Union[torch.Tensor, np.ndarray], sim_horizon: int) -> Tuple:
+        """
+        Simulate future states given initial state and control inputs.
+        
+        This method performs autoregressive prediction for `sim_horizon` steps. It handles 
+        device placement and batching internally, accepting unbatched inputs.
+
+        Args:
+            x0: Initial states of shape (lookback, *state_dims). Can be numpy array or torch tensor.
+            u: Control inputs of shape (sim_horizon + lookback - 1, control_dim). 
+               Can be numpy array or torch tensor.
+            sim_horizon: Number of steps to simulate.
+
+        Returns:
+            Tuple containing:
+            - pred_latents: Predicted latent sequence of shape (sim_horizon, latent_dim)
+            - pred_states: Predicted state sequence of shape (sim_horizon, *state_dims)
+        """
+        # Convert inputs to tensors
+        x0 = torch.as_tensor(x0, dtype=torch.float32)
+        u = torch.as_tensor(u, dtype=torch.float32)
+
+        assert x0.shape[0] == self.config.lookback, "Initial state sequence length must match lookback. Make sure that the sequences are not batched."
+        assert u.shape[0] >= self.config.pred_horizon + self.config.lookback - 1, "Control sequence length is short and cannot simulate future states for simulation horizon."
+        assert self.dynamics is not None, "Dynamics module must be provided."
+
+        # save the initial pred_horizon
+        original_pred_horizon = self.config.pred_horizon
+
+        # reshape given inputs
+        x0 = x0.unsqueeze(0)  # (1, lookback, *state_dims)
+        u = u.unsqueeze(0)    # (1, sim_horizon + lookback - 1, control_dim)
+        
+        # convert to devidce
+        x0 = x0.to(self.config.device)
+        u = u.to(self.config.device)
+
+        # set prediction horizon
+        self.config.pred_horizon = sim_horizon
+        self.eval()
+        with torch.no_grad():
+            if self.control_encoder is not None:
+                _, _, pred_latents, pred_states = self.forward(x0, u)
+            else:
+                _, pred_latents, pred_states = self.forward(x0, u)
+        
+        # set back the original pred_horizon
+        self.config.pred_horizon = original_pred_horizon
+
+        return pred_latents.squeeze(0).cpu(), pred_states.squeeze(0).cpu()
     
     def count_parameters(self, verbose: bool = True) -> Dict[str, int]:
         """

@@ -19,7 +19,8 @@ class Trainer:
                  latent_weight: float = 1.0,
                  input_rec_weight: float = 1.0,
                  learning_rate: float = 1e-3,
-                 restarts: int = 1,
+                 restarts_ae: int = 1,
+                 restarts_e2e: int = 1,
                  device: Optional[torch.device] = None):
         self.model = model
         self.rec_weight = rec_weight
@@ -27,7 +28,8 @@ class Trainer:
         self.latent_weight = latent_weight
         self.input_rec_weight = input_rec_weight
         self.learning_rate = learning_rate
-        self.restarts = restarts
+        self.restarts_ae = restarts_ae
+        self.restarts_e2e = restarts_e2e
         
         # Determine device
         if device is not None:
@@ -130,13 +132,18 @@ class Trainer:
         if callable(reset_parameters):
             m.reset_parameters()
 
-    def train_autoencoders(self, train_loader: DataLoader, epochs: int, ae_optimizer: torch.optim.Optimizer, control_ae_optimizer: Optional[torch.optim.Optimizer] = None, valid_data: Optional[Union[DataLoader, Tuple[torch.Tensor, ...]]] = None):
+    def train_autoencoders(self, train_loader: DataLoader, epochs: int, ae_optimizer: torch.optim.Optimizer, control_ae_optimizer: Optional[torch.optim.Optimizer] = None, valid_data: Optional[Union[DataLoader, Tuple[torch.Tensor, ...]]] = None, seed: Optional[int] = None):
         """Pre-train the autoencoder."""
 
         best_ae_states_val_loss = float('inf')
-        for restart in range(self.restarts):
-            print(f"  AE Restart {restart + 1}/{self.restarts}", flush=True)
-            print(f"    Training States Autoencoder for {epochs} epochs...", flush=True)
+        for restart in range(self.restarts_ae):
+            if seed is not None:
+                torch.manual_seed(seed + restart)
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed_all(seed + restart)
+
+            print(f"  AE Restart {restart + 1}/{self.restarts_ae}")
+            print(f"    Training States Autoencoder for {epochs} epochs...")
             
             # Only reset weights for restarts > 0 to preserve pretrained weights on first run
             if restart > 0:
@@ -167,18 +174,23 @@ class Trainer:
                     # extract state and control AE losses
                     ae_val_loss = components['rec_loss']
                     if ae_val_loss < best_ae_states_val_loss:
-                        print(f"Epoch {epoch+1} - New best state AE validation loss: {ae_val_loss:.6f}", flush=True)
+                        print(f"Epoch {epoch+1} - New best state AE validation loss: {ae_val_loss:.6f}")
                         best_ae_states_val_loss = ae_val_loss
                         self.initial_aes.update({
-                            'encoder': self.model.encoder.state_dict(),
-                            'decoder': self.model.decoder.state_dict(),
+                            'encoder': copy.deepcopy(self.model.encoder.state_dict()),
+                            'decoder': copy.deepcopy(self.model.decoder.state_dict()),
                         })
             
         if self.model.control_encoder is not None and control_ae_optimizer is not None:
             best_ae_control_val_loss = float('inf')
-            for restart in range(self.restarts):
-                print(f"\n  AE Restart {restart + 1}/{self.restarts}", flush=True)
-                print(f"    Training Control Autoencoder for {epochs} epochs...", flush=True)
+            for restart in range(self.restarts_ae):
+                if seed is not None:
+                    torch.manual_seed(seed + 1000 + restart)
+                    if torch.cuda.is_available():
+                        torch.cuda.manual_seed_all(seed + 1000 + restart)
+
+                print(f"\n  AE Restart {restart + 1}/{self.restarts_ae}")
+                print(f"    Training Control Autoencoder for {epochs} epochs...")
                 
                 # Only reset weights for restarts > 0
                 if restart > 0:
@@ -209,13 +221,13 @@ class Trainer:
                         # extract control AE loss
                         control_ae_val_loss = components['input_rec_loss']
                         if control_ae_val_loss < best_ae_control_val_loss:
-                            print(f"Epoch {epoch+1} - New best control AE validation loss: {control_ae_val_loss:.6f}", flush=True)
+                            print(f"Epoch {epoch+1} - New best control AE validation loss: {control_ae_val_loss:.6f}")
                             best_ae_control_val_loss = control_ae_val_loss
                             if self.initial_aes is None:
                                 self.initial_aes = {}
                             self.initial_aes.update({
-                                'control_encoder': self.model.control_encoder.state_dict(),
-                                'control_decoder': self.model.control_decoder.state_dict(),
+                                'control_encoder': copy.deepcopy(self.model.control_encoder.state_dict()),
+                                'control_decoder': copy.deepcopy(self.model.control_decoder.state_dict()),
                             })
         
     def validate(self, valid_data: Union[DataLoader, Tuple[torch.Tensor, ...]]) -> Tuple[float, Dict[str, float]]:
@@ -315,7 +327,8 @@ class Trainer:
               ae_epochs: int = 5,
               patience_early_stopping: int = 10,
               patience_lr_scheduler: int = 5,
-              save_path: str = "training_results") -> float:
+              save_path: str = "training_results",
+              seed: Optional[int] = None) -> float:
         """
         Main training loop.
         """
@@ -336,10 +349,15 @@ class Trainer:
                 control_ae_optimizer = optim.Adam(control_ae_params, lr=self.learning_rate)
             
             # Train AEs
-            self.train_autoencoders(train_loader, ae_epochs, ae_optimizer, control_ae_optimizer, valid_data)
+            self.train_autoencoders(train_loader, ae_epochs, ae_optimizer, control_ae_optimizer, valid_data, seed=seed)
 
-        for run in range(self.restarts):
-            print(f"\nStarting run {run + 1}/{self.restarts}", flush=True)
+        for run in range(self.restarts_e2e):
+            if seed is not None:
+                torch.manual_seed(seed + 2000 + run)
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed_all(seed + 2000 + run)
+
+            print(f"\nStarting run {run + 1}/{self.restarts_e2e}")
             
             # Reset model weights
             self.model.apply(self._weight_reset)
@@ -350,6 +368,10 @@ class Trainer:
             if 'control_encoder' in self.initial_aes and self.model.control_encoder is not None and self.model.control_decoder is not None:
                 self.model.control_encoder.load_state_dict(self.initial_aes['control_encoder'])
                 self.model.control_decoder.load_state_dict(self.initial_aes['control_decoder'])
+
+            # evaluate initial validation loss
+            #_, components = self.validate(valid_data)
+            #print(f"  Initial validation loss before full training: {components['rec_loss']:.6f}")
             
             optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
             scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience_lr_scheduler, min_lr=1e-6, verbose=True)
@@ -373,7 +395,7 @@ class Trainer:
             best_run_state = None
             is_best_run = False
             
-            print(f"Starting full training for {epochs} epochs...", flush=True)
+            print(f"Starting full training for {epochs} epochs...")
             for epoch in range(epochs):
                 self.model.train()
                 train_loss = 0
@@ -411,7 +433,7 @@ class Trainer:
                 history['epoch_pred_loss_valid'].append(avg_val_components.get('pred_loss', 0))
                 history['epoch_lat_loss_valid'].append(avg_val_components.get('latent_loss', 0))
                 
-                print(f"Epoch {epoch+1}/{epochs} - Train Loss: {avg_train_loss:.6f} - Val Loss: {avg_val_loss:.6f}", flush=True)
+                print(f"Epoch {epoch+1}/{epochs} - Train Loss: {avg_train_loss:.6f} - Val Loss: {avg_val_loss:.6f}")
                 
                 if avg_val_loss < best_run_loss:
                     best_run_loss = avg_val_loss
@@ -423,13 +445,13 @@ class Trainer:
                         best_overall_loss = best_run_loss
                         best_overall_model_state = best_run_state
                         is_best_run = True
-                        print(f"New best model found with validation loss: {best_overall_loss:.6f}", flush=True)
+                        print(f"New best model found with validation loss: {best_overall_loss:.6f}")
                         torch.save(best_overall_model_state, os.path.join(save_path, "best_model.pth"))
                 else:
                     patience_counter += 1
                     
                 if patience_counter >= patience_early_stopping:
-                    print("Early stopping triggered.", flush=True)
+                    print("Early stopping triggered.")
                     break
             
             # If this run is currently the best run, save its history and plots
@@ -444,13 +466,15 @@ class Trainer:
                 axs.set_ylabel('MSE loss')
                 axs.plot(history['avg_epoch_total_loss_train'], color='blue', linestyle='-', label='total train loss')
                 axs.plot(history['avg_epoch_rec_loss_train'], color='orange', linestyle='-', label='rec train loss')
-                axs.plot(history['avg_epoch_rec_in_loss_train'], color='red', linestyle='-', label='rec in train loss')
+                if self.model.control_encoder is not None:
+                    axs.plot(history['avg_epoch_rec_in_loss_train'], color='red', linestyle='-', label='rec in train loss')
                 axs.plot(history['avg_epoch_pred_loss_train'], color='green', linestyle='-', label='pred train loss')
                 axs.plot(history['avg_epoch_lat_loss_train'], color='black', linestyle='-', label='lat train loss')
                 
                 axs.plot(history['epoch_total_loss_valid'], color='blue', linestyle='--', label='total valid loss')
                 axs.plot(history['epoch_rec_loss_valid'], color='orange', linestyle='--', label='rec valid loss')
-                axs.plot(history['epoch_rec_in_loss_valid'], color='red', linestyle='--', label='rec in valid loss')
+                if self.model.control_encoder is not None:
+                    axs.plot(history['epoch_rec_in_loss_valid'], color='red', linestyle='--', label='rec in valid loss')
                 axs.plot(history['epoch_pred_loss_valid'], color='green', linestyle='--', label='pred valid loss')
                 axs.plot(history['epoch_lat_loss_valid'], color='black', linestyle='--', label='lat valid loss')
                 axs.legend()
@@ -460,7 +484,7 @@ class Trainer:
         # Load best model into current model instance
         if best_overall_model_state is not None:
             self.model.load_state_dict(best_overall_model_state)
-            print(f"Training completed. Best validation loss: {best_overall_loss:.6f}", flush=True)
+            print(f"Training completed. Best validation loss: {best_overall_loss:.6f}")
         
         return best_overall_loss
     

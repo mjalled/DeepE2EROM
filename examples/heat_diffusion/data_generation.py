@@ -163,7 +163,7 @@ Data['all_T_histories'] = T_reduced
 Data['all_U_histories'] = U_reduced
 
 # save the data
-os.makedirs('./data/', exist_ok=True)
-with open('./data/heat_equation_data.pkl', 'wb') as f:
+os.makedirs('./dataset/', exist_ok=True)
+with open('./dataset/heat_equation_data.pkl', 'wb') as f:
     pickle.dump(Data, f)
 

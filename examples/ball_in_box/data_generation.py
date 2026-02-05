@@ -105,6 +105,6 @@ if __name__ == "__main__":
     Data['Autonomous'] = autonomous_dynamics
 
     # save the data
-    os.makedirs('./data/', exist_ok=True)
-    with open('./data/ball_in_box_data.pkl', 'wb') as f:
+    os.makedirs('./dataset/', exist_ok=True)
+    with open('./dataset/ball_in_box_data.pkl', 'wb') as f:
         pickle.dump(Data, f)

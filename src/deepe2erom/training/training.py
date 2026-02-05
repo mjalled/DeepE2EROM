@@ -374,7 +374,7 @@ class Trainer:
             #print(f"  Initial validation loss before full training: {components['rec_loss']:.6f}")
             
             optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
-            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience_lr_scheduler, min_lr=1e-6, verbose=True)
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=patience_lr_scheduler, min_lr=1e-6)
             
             # Phase 2: Full Training
             history = {

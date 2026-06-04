@@ -1,6 +1,8 @@
 # DeepE2EROM
 DeepE2EROM is a PyTorch-based framework for building fully end-to-end, data-driven reduced order models (ROMs) using autoencoders with learnable latent dynamics. The framework supports general nonlinear ROMs and includes an implementation of control-affine latent dynamics for systems with control inputs as shown in the figure below.
 
+Paper: [Learning Control-Affine Reduced-Order Models via Autoencoders](https://arxiv.org/abs/2606.05045)
+
 ![Control-affine ROM](images/Framework.png)
 
 
